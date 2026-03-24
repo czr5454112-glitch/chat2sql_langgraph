@@ -1,0 +1,34 @@
+{
+  "java.autobuild.enabled": false,
+  "java.import.exclusions": [
+    "**/cplex/**",
+    "**/oplide/**",
+    "cplex/**",
+    "**/opl/**"
+  ],
+  "files.exclude": {
+    "**/cplex/**": true,
+    "**/oplide/**": true,
+    "**/opl/**": true,
+    "**/anaconda/**": true,
+    "**/.conda/**": true,
+    "**/pkgs/**": true
+  },
+  "files.watcherExclude": {
+    "**/cplex/**": true,
+    "**/oplide/**": true,
+    "**/opl/**": true,
+    "**/anaconda/**": true,
+    "**/.conda/**": true,
+    "**/pkgs/**": true
+  },
+  "search.exclude": {
+    "**/cplex/**": true,
+    "**/oplide/**": true,
+    "**/opl/**": true,
+    "**/anaconda/**": true,
+    "**/.conda/**": true,
+    "**/pkgs/**": true
+  }
+}
+

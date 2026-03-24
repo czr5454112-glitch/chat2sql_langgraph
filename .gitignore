@@ -1,0 +1,13 @@
+.env
+*.db
+*.sqlite
+__pycache__/
+.ruff_cache/
+.pytest_cache/
+.venv/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+*.egg-info/
