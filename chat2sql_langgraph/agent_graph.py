@@ -3,7 +3,9 @@ from __future__ import annotations
 import sqlite3
 import os
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, TypedDict
+from typing import Any, List, Optional, Tuple
+
+from typing_extensions import NotRequired, TypedDict
 
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.agent_toolkits.sql.base import create_sql_agent
@@ -11,13 +13,14 @@ from langchain_community.tools.sql_database.tool import QuerySQLDatabaseTool
 from langchain_community.utilities import SQLDatabase
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import BaseTool
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from sqlalchemy import create_engine
 
 from langgraph.prebuilt import create_react_agent
 from langgraph.graph import END, StateGraph
 
 from .config import Settings
+from .sql_merge import merge_sql_round
 from .tracing import SQLTrace
 
 
@@ -57,9 +60,33 @@ class TrackedSQLDatabaseToolkit(SQLDatabaseToolkit):
         return replaced
 
 
+def _last_human_question(messages: List[BaseMessage]) -> str:
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage) or getattr(m, "type", None) == "human":
+            c = getattr(m, "content", "")
+            if c:
+                return str(c)
+    return ""
+
+
+def _last_ai_answer(messages: List[BaseMessage]) -> str:
+    for m in reversed(messages):
+        if isinstance(m, AIMessage) or getattr(m, "type", None) == "ai":
+            c = getattr(m, "content", "")
+            if c is not None and str(c).strip():
+                return str(c)
+    return ""
+
+
 class AgentState(TypedDict):
     # 复用 LangGraph 的 messages 状态约定，便于 create_react_agent 接管。
     messages: List[BaseMessage]
+    # 后处理：将本轮多条 sql_db_query 合并为单条（可选）
+    merged_sql: NotRequired[Optional[str]]
+    merge_notes: NotRequired[Optional[str]]
+    merge_exec_ok: NotRequired[Optional[bool]]
+    merge_exec_error: NotRequired[Optional[str]]
+    merge_result_preview: NotRequired[Optional[str]]
 
 
 def build_langgraph_sql_agent(settings: Settings) -> Tuple[Any, SQLTrace]:
@@ -174,12 +201,43 @@ def build_langgraph_sql_agent(settings: Settings) -> Tuple[Any, SQLTrace]:
         res = answer_agent.invoke({"messages": state["messages"]})
         return {"messages": res.get("messages", state["messages"])}
 
+    def _merge_sql_node(state: AgentState) -> AgentState:
+        """ReAct 之后的后处理：SQL 轨迹合并 + 同库执行校验（不调用工具）。"""
+        if not settings.enable_sql_merge:
+            return {
+                "merge_notes": "已关闭 SQL 合并（enable_sql_merge=False）。",
+                "merged_sql": None,
+                "merge_exec_ok": None,
+                "merge_exec_error": None,
+                "merge_result_preview": None,
+            }
+        msgs = state["messages"]
+        user_q = _last_human_question(msgs)
+        final_ans = _last_ai_answer(msgs)
+        merge_res = merge_sql_round(
+            llm=llm,
+            db=db,
+            events=list(trace.events),
+            user_question=user_q,
+            final_answer=final_ans,
+            max_retries=max(0, int(settings.sql_merge_max_retries)),
+        )
+        return {
+            "merged_sql": merge_res.merged_sql,
+            "merge_notes": merge_res.notes,
+            "merge_exec_ok": merge_res.exec_ok,
+            "merge_exec_error": merge_res.exec_error,
+            "merge_result_preview": merge_res.result_preview,
+        }
+
     workflow = StateGraph(AgentState)
     workflow.add_node("bootstrap", _bootstrap_node)
     workflow.add_node("answer", _answer_node)
+    workflow.add_node("merge_sql", _merge_sql_node)
     workflow.set_entry_point("bootstrap")
     workflow.add_edge("bootstrap", "answer")
-    workflow.add_edge("answer", END)
+    workflow.add_edge("answer", "merge_sql")
+    workflow.add_edge("merge_sql", END)
 
     graph = workflow.compile()
     return graph, trace
