@@ -5,7 +5,7 @@
 - 你用中文提问
 - 系统调用 DeepSeek（OpenAI 兼容接口）
 - 由 LangGraph 驱动 SQL 工具（list tables / schema / execute query）
-- 最终输出：**最终答案 / SQL（最终执行版本）/ 查询结果**
+- 最终输出：**最终答案 / 本轮全部 SQL / 合并后的单条 SQL（可选）/ 查询结果**
 
 ## 运行前准备
 

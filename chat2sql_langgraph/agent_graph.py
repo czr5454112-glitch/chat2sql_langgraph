@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""
+编排：LangGraph（bootstrap → ReAct answer → merge_sql）。
+工具：langchain_community 的 SQLDatabaseToolkit（与官方 Text-to-SQL 示例一致：
+      用 LangChain 生态的 DB 工具，用 LangGraph 管状态与多节点流程）。
+不再使用 LangChain 的 create_sql_agent 作为第二套引擎。
+"""
+
 import sqlite3
 import os
 from pathlib import Path
@@ -8,7 +15,6 @@ from typing import Any, List, Optional, Tuple
 from typing_extensions import NotRequired, TypedDict
 
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
-from langchain_community.agent_toolkits.sql.base import create_sql_agent
 from langchain_community.tools.sql_database.tool import QuerySQLDatabaseTool
 from langchain_community.utilities import SQLDatabase
 from langchain_openai import ChatOpenAI
@@ -241,36 +247,4 @@ def build_langgraph_sql_agent(settings: Settings) -> Tuple[Any, SQLTrace]:
 
     graph = workflow.compile()
     return graph, trace
-
-
-def build_langchain_sql_agent(settings: Settings) -> Tuple[Any, SQLTrace]:
-    """
-    用 LangChain 预设的 SQL Agent（create_sql_agent + openai-tools）来获得更贴近“经典 SQL agent”的编排。
-
-    返回：
-    - agent executor（可用 invoke，输入 key 为 input）
-    - SQLTrace（抓取最终实际执行 SQL）
-    """
-    llm = ChatOpenAI(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
-        model=settings.deepseek_model,
-        temperature=0,
-    )
-
-    db_path = str(Path(settings.sqlite_db_path).expanduser())
-    engine = create_engine("sqlite://", creator=lambda: sqlite3.connect(db_path))
-    db = SQLDatabase(engine)
-
-    trace = SQLTrace()
-    toolkit = TrackedSQLDatabaseToolkit(db=db, llm=llm, trace=trace)
-
-    agent = create_sql_agent(
-        llm=llm,
-        toolkit=toolkit,
-        verbose=settings.show_sql,
-        agent_type="openai-tools",
-        return_intermediate_steps=False,
-    )
-    return agent, trace
 

@@ -9,11 +9,9 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from rich.console import Console
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
 
-from .agent_graph import build_langchain_sql_agent, build_langgraph_sql_agent
+from .agent_graph import build_langgraph_sql_agent
 from .config import Settings
-from .sql_merge import merge_sql_round, make_sql_database
 
 
 console = Console()
@@ -71,15 +69,6 @@ def _truncate(obj: Any, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + "..."
-
-
-def _make_merge_llm(settings: Settings) -> ChatOpenAI:
-    return ChatOpenAI(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
-        model=settings.deepseek_model,
-        temperature=0,
-    )
 
 
 def _print_round_sql_trace(console: Console, trace: Any, result_max_chars: int) -> None:
@@ -158,13 +147,9 @@ def _print_langgraph_verbose(state: Any, max_chars: int) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="chat2sql_langgraph")
-    parser.add_argument(
-        "--engine",
-        type=str,
-        default="langgraph",
-        choices=["langchain", "langgraph"],
-        help="选择执行引擎：langgraph=LangGraph SQL Agent（默认，支持 --viz）；langchain=预设 SQL agent",
+    parser = argparse.ArgumentParser(
+        prog="chat2sql_langgraph",
+        description="LangGraph 编排的 SQLite 自然语言查询（工具层使用 LangChain SQLDatabaseToolkit）。",
     )
     parser.add_argument(
         "-q",
@@ -187,31 +172,24 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = _load_settings()
-    if args.engine == "langgraph":
-        agent, trace = build_langgraph_sql_agent(settings)
-    else:
-        agent, trace = build_langchain_sql_agent(settings)
+    agent, trace = build_langgraph_sql_agent(settings)
 
     result_max_chars = int(os.getenv("CHAT2SQL_RESULT_MAX_CHARS", "4000").strip() or "4000")
 
     if args.query:
         trace.clear()
-        if args.engine == "langgraph":
-            state = agent.invoke({"messages": [HumanMessage(content=args.query)]})
-            if settings.show_sql:
-                _print_langgraph_verbose(state, result_max_chars)
-            messages = state.get("messages", [])
-            output = messages[-1].content if messages else state
-        else:
-            result = agent.invoke({"input": args.query})
-            output = result.get("output", result) if isinstance(result, dict) else result
+        state = agent.invoke({"messages": [HumanMessage(content=args.query)]})
+        if settings.show_sql:
+            _print_langgraph_verbose(state, result_max_chars)
+        messages = state.get("messages", [])
+        output = messages[-1].content if messages else state
 
         console.print("[bold]最终答案[/bold]")
         console.print(output)
 
         _print_round_sql_trace(console, trace, result_max_chars)
 
-        if args.engine == "langgraph" and isinstance(state, dict):
+        if isinstance(state, dict):
             _print_merged_sql_section(
                 console,
                 merged_sql=state.get("merged_sql"),
@@ -221,28 +199,6 @@ def main() -> None:
                 merge_result_preview=state.get("merge_result_preview"),
                 result_max_chars=result_max_chars,
             )
-        elif args.engine == "langchain" and settings.enable_sql_merge:
-            mllm = _make_merge_llm(settings)
-            mdb = make_sql_database(settings)
-            mr = merge_sql_round(
-                mllm,
-                mdb,
-                list(trace.events),
-                user_question=args.query,
-                final_answer=str(output),
-                max_retries=max(0, settings.sql_merge_max_retries),
-            )
-            _print_merged_sql_section(
-                console,
-                merged_sql=mr.merged_sql,
-                merge_notes=mr.notes,
-                merge_exec_ok=mr.exec_ok,
-                merge_exec_error=mr.exec_error,
-                merge_result_preview=mr.result_preview,
-                result_max_chars=result_max_chars,
-            )
-        elif args.engine == "langchain" and not settings.enable_sql_merge:
-            console.print("\n[dim]已关闭 SQL 合并（CHAT2SQL_SQL_MERGE=0）。[/dim]")
 
         if trace.last_result is not None:
             console.print("\n[bold]最后一次 sql_db_query 的原始返回（可能被截断）[/bold]")
@@ -250,10 +206,6 @@ def main() -> None:
         return
 
     if args.viz:
-        if args.engine != "langgraph":
-            console.print("[bold yellow]提示：[/bold yellow] --viz 仅在 --engine langgraph 下可用。")
-            console.print("请改用：python -m chat2sql_langgraph.cli --engine langgraph --viz")
-            return
         base_graph = agent.get_graph()
         mermaid = base_graph.draw_mermaid()
         if args.viz_file:
@@ -279,24 +231,18 @@ def main() -> None:
             return
 
         trace.clear()
-        if args.engine == "langgraph":
-            # 传入完整消息序列，保证多轮对话上下文
-            state = agent.invoke({"messages": messages + [HumanMessage(content=q)]})
-            if settings.show_sql:
-                _print_langgraph_verbose(state, result_max_chars)
-            messages = state.get("messages", messages)
-            output = messages[-1].content if messages else state
-        else:
-            # LangChain 预设 SQL agent 更偏“单轮任务”，这里保持每轮独立以复刻原项目效果
-            result = agent.invoke({"input": q})
-            output = result.get("output", result) if isinstance(result, dict) else result
+        state = agent.invoke({"messages": messages + [HumanMessage(content=q)]})
+        if settings.show_sql:
+            _print_langgraph_verbose(state, result_max_chars)
+        messages = state.get("messages", messages)
+        output = messages[-1].content if messages else state
 
         console.print("\n[bold green]最终答案[/bold green]")
         console.print(output)
 
         _print_round_sql_trace(console, trace, result_max_chars)
 
-        if args.engine == "langgraph" and isinstance(state, dict):
+        if isinstance(state, dict):
             _print_merged_sql_section(
                 console,
                 merged_sql=state.get("merged_sql"),
@@ -306,28 +252,6 @@ def main() -> None:
                 merge_result_preview=state.get("merge_result_preview"),
                 result_max_chars=result_max_chars,
             )
-        elif args.engine == "langchain" and settings.enable_sql_merge:
-            mllm = _make_merge_llm(settings)
-            mdb = make_sql_database(settings)
-            mr = merge_sql_round(
-                mllm,
-                mdb,
-                list(trace.events),
-                user_question=q,
-                final_answer=str(output),
-                max_retries=max(0, settings.sql_merge_max_retries),
-            )
-            _print_merged_sql_section(
-                console,
-                merged_sql=mr.merged_sql,
-                merge_notes=mr.notes,
-                merge_exec_ok=mr.exec_ok,
-                merge_exec_error=mr.exec_error,
-                merge_result_preview=mr.result_preview,
-                result_max_chars=result_max_chars,
-            )
-        elif args.engine == "langchain" and not settings.enable_sql_merge:
-            console.print("\n[dim]已关闭 SQL 合并（CHAT2SQL_SQL_MERGE=0）。[/dim]")
 
         if trace.last_result is not None:
             console.print("\n[bold]最后一次 sql_db_query 的原始返回（可能被截断）[/bold]")
@@ -336,4 +260,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
